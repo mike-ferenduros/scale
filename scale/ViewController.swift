@@ -53,9 +53,26 @@ class Scales : NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     let characteristicUUID = CBUUID(string: "0x2A9C")
 
     private var central: CBCentralManager!
-    private var peripheral: CBPeripheral?
+
+    private var peripheral: CBPeripheral? {
+        didSet {
+            oldValue?.delegate = nil
+            peripheral?.delegate = self
+        }
+    }
+
     private var service: CBService?
     private var characteristic: CBCharacteristic?
+
+    var status: String {
+        if peripheral == nil {
+            return "Looking for scale"
+        } else if characteristic == nil {
+            return "Connecting"
+        } else {
+            return peripheral?.name ?? "Connected"
+        }
+    }
 
     var device: HKDevice? {
         if let peripheral = peripheral {
@@ -65,7 +82,7 @@ class Scales : NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         }
     }
 
-    private(set) var weight: (kg: Double, timestamp: Date, repeatCount: Int)?
+    private(set) var weight: (kg: Double, timestamp: Date, isFinal: Int)?
 
     override init() {
         super.init()
@@ -86,43 +103,82 @@ class Scales : NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
                 print("CBCentralManager: .poweredOff")
             case .poweredOn:
                 print("CBCentralManager: .poweredOn")
-                central.scanForPeripherals(withServices: [serviceUUID])
+                reset()
         }
+        delegate?.scalesDidChangeState(self)
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
         if self.peripheral == nil {
             central.stopScan()
             self.peripheral = peripheral
-            peripheral.delegate = self
+            delegate?.scalesDidChangeState(self)
+
             central.connect(peripheral)
         }
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        peripheral.discoverServices([serviceUUID])
+        if peripheral == self.peripheral {
+            peripheral.discoverServices([serviceUUID])
+        }
+    }
+
+    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        if peripheral == self.peripheral {
+            reset()
+        }
+    }
+
+    func reset() {
+        if let peripheral = self.peripheral {
+            self.peripheral = nil
+            self.service = nil
+            self.characteristic = nil
+            central.cancelPeripheralConnection(peripheral)
+        }
+        central.scanForPeripherals(withServices: [serviceUUID])
+        delegate?.scalesDidChangeState(self)
+    }
+
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        if peripheral == self.peripheral {
+            reset()
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let service = peripheral.services?.first(where: { $0.uuid == serviceUUID }) {
             self.service = service
             peripheral.discoverCharacteristics([characteristicUUID], for: service)
+        } else {
+            print("Characteristic not found")
+            reset()
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        if let characteristic = service.characteristics?.first(where: { $0.uuid == characteristicUUID }) {
+        if service == self.service, let characteristic = service.characteristics?.first(where: { $0.uuid == characteristicUUID }) {
             self.characteristic = characteristic
             peripheral.setNotifyValue(true, for: characteristic)
+        } else {
+            print("Characteristic not found")
+            reset()
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard let reader = DataReader(data: characteristic.value) else {
+        guard characteristic == self.characteristic, let reader = DataReader(data: characteristic.value) else {
             return
         }
- 
+
         let flags = reader.read16()
+
+        if (flags & (1<<15)) != 0 {
+            self.weight = nil
+            delegate?.scalesDidChangeState(self)
+            return
+        }
 
         guard flags & (1<<10) != 0 else {
             return
@@ -137,7 +193,6 @@ class Scales : NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         }
 
         let rawWeight = reader.read16()
-        print(rawWeight)
 
         let kg: Double
         if (flags & 1) != 0 {
@@ -146,9 +201,14 @@ class Scales : NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             kg = Double(rawWeight) * 0.005
         }
 
-        let repeatCount = (self.weight?.kg == kg) ? (self.weight!.repeatCount + 1) : 0
+        let final: Int
+        if (flags & (1<<13)) != 0 {
+            final = (self.weight?.isFinal ?? 0) + 1
+        } else {
+            final = 0
+        }
 
-        self.weight = (kg: kg, timestamp: Date(), repeatCount: repeatCount)
+        self.weight = (kg: kg, timestamp: Date(), isFinal: final)
 
         delegate?.scalesDidChangeState(self)
     }
@@ -157,6 +217,7 @@ class Scales : NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 class ViewController: UIViewController, ScalesDelegate {
 
     let scales = Scales()
+    @IBOutlet var statusLabel: UILabel!
     @IBOutlet var weightLabel: UILabel!
     @IBOutlet var saveButton: UIButton!
 
@@ -171,13 +232,14 @@ class ViewController: UIViewController, ScalesDelegate {
     }
 
     func scalesDidChangeState(_ scales: Scales) {
-        if let weight = scales.weight?.0 {
-            weightLabel?.text = String(format: "%.01f", weight)
+        if let weight = scales.weight {
+            weightLabel?.text = String(format: "%.01f", weight.kg)
             saveButton.isEnabled = true
         } else {
             weightLabel?.text = "--"
-            saveButton.isEnabled = true
+            saveButton.isEnabled = false
         }
+        statusLabel.text = scales.status
     }
 
     @IBAction func logWeight() {

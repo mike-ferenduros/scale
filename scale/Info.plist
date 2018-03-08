@@ -33,7 +33,7 @@
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>Logs your weight</string>
+	<string>Save your weight to HealthKit</string>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
