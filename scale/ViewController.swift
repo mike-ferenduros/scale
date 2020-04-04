@@ -63,9 +63,13 @@ class Scales : NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     private var service: CBService?
     private var characteristic: CBCharacteristic?
+    
+    var saveStatus: String?
 
     var status: String {
-        if peripheral == nil {
+        if let saveStatus = saveStatus {
+            return saveStatus
+        } else if peripheral == nil {
             return "Looking for scale"
         } else if characteristic == nil {
             return "Connecting"
@@ -251,8 +255,19 @@ class ViewController: UIViewController, ScalesDelegate {
         let weightQuantity = HKQuantity(unit: HKUnit.gram(), doubleValue: weight.kg * 1000)
         let weightSample = HKQuantitySample(type: weightType, quantity: weightQuantity, start: weight.timestamp, end: weight.timestamp, device: scales.device, metadata: nil)
 
+        saveButton.isEnabled = false
+
         healthStore.requestAuthorization(toShare: [weightType], read: nil) { ok, _ in
             healthStore.save(weightSample) { ok, err in
+                DispatchQueue.main.async {
+                    self.scales.saveStatus = ok ? "Saved 👍" : "Failed 👎"
+                    self.statusLabel.text = self.scales.status
+
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        self.scales.saveStatus = ok ? "Saved 👍" : "Failed 👎"
+                        self.statusLabel.text = self.scales.status
+                    }
+                }
             }
         }
     }
